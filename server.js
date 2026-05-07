@@ -3,8 +3,10 @@
 const express = require("express");
 const favicon = require("serve-favicon");
 const bodyParser = require("body-parser");
+const cookieParser = require("cookie-parser");
 const session = require("express-session");
-// const csrf = require('csurf');
+const csurf = require("csurf");
+const rateLimit = require("express-rate-limit");
 const consolidate = require("consolidate"); // Templating library adapter for Express
 const swig = require("swig");
 // const helmet = require("helmet");
@@ -73,6 +75,8 @@ MongoClient.connect(db, (err, db) => {
         // Mandatory in Express v4
         extended: false
     }));
+    // Cookie parser required for csurf cookie mode and secure cookie handling
+    app.use(cookieParser());
 
     // Enable session management using express middleware
     app.use(session({
@@ -80,9 +84,15 @@ MongoClient.connect(db, (err, db) => {
         //    return genuuid() // use UUIDs for session IDs
         //},
         secret: cookieSecret,
-        // Both mandatory in Express v4
-        saveUninitialized: true,
-        resave: true
+        // Best practices: avoid creating empty sessions and avoid unnecessary resaves
+        saveUninitialized: false,
+        resave: false,
+        cookie: {
+            httpOnly: true,
+            secure: (process.env.NODE_ENV === 'production'),
+            sameSite: 'Lax',
+            maxAge: 1000 * 60 * 60 * 4 // 4 hours
+        }
         /*
         // Fix for A5 - Security MisConfig
         // Use generic cookie name
@@ -101,16 +111,28 @@ MongoClient.connect(db, (err, db) => {
 
     }));
 
-    /*
     // Fix for A8 - CSRF
-    // Enable Express csrf protection
-    app.use(csrf());
-    // Make csrf token available in templates
-    app.use((req, res, next) => {
-        res.locals.csrftoken = req.csrfToken();
-        next();
+    // Enable CSRF protection in non-test environments
+    if (process.env.NODE_ENV !== 'test') {
+        // Use cookie-based CSRF tokens to work with non-JSON forms as well
+        app.use(csurf({ cookie: true }));
+        // Make csrf token available in templates
+        app.use((req, res, next) => {
+            res.locals.csrftoken = req.csrfToken();
+            next();
+        });
+    }
+
+    // Rate limiting — apply to sensitive endpoints (safe default)
+    const authLimiter = rateLimit({
+        windowMs: 15 * 60 * 1000, // 15 minutes
+        max: 20, // limit each IP to 20 requests per windowMs
+        standardHeaders: true,
+        legacyHeaders: false
     });
-    */
+    // attach limiter to auth-related endpoints (the routes will pick it up)
+    app.use("/login", authLimiter);
+    app.use("/signup", authLimiter);
 
     // Register templating engine
     app.engine(".html", consolidate.swig);
